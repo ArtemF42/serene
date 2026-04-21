@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Sequence
-from typing import Literal
+from typing import Callable, Literal
 
 import polars as pl
 
@@ -61,6 +61,7 @@ def apply_n_core_filter(
     min_count: int | None = None,
     user_min_count: int | None = None,
     item_min_count: int | None = None,
+    post_step_filter: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     user_key: str = "user_id",
     item_key: str = "item_id",
 ) -> pl.DataFrame:
@@ -80,5 +81,8 @@ def apply_n_core_filter(
 
         events = apply_min_count_filter(events, user_min_count, user_key)
         events = apply_min_count_filter(events, item_min_count, item_key)
+
+        if post_step_filter is not None:
+            events = post_step_filter(events)
 
     return events
