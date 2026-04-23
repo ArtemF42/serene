@@ -24,24 +24,26 @@ class SequentialDataset(Dataset):
         super().__init__()
 
         if not max_length > 0:
-            raise ValueError
+            raise ValueError("`max_length` must be > 0.")
 
         if not 0 <= min_length <= max_length:
-            raise ValueError
+            raise ValueError("`min_length` must be <= `max_length` and >= 0.")
 
         self.max_length = max_length
         self.min_length = min_length
 
-        if not events.schema[item_key].is_integer():
-            raise ValueError
+        schema = events.schema
+
+        if not schema[item_key].is_integer():
+            raise ValueError(f"{item_key!r} must be an integer column, found {schema[item_key]}.")
 
         feature_keys = () if feature_keys is None else tuple(feature_keys)
 
         for key in feature_keys:
-            dtype = events.schema[key]
+            dtype = schema[key]
 
             if not (dtype.is_integer() or dtype.is_float() or dtype == pl.Boolean):
-                raise ValueError
+                raise ValueError(f"only integer, float, and boolean features are supported, found {dtype} for feature {key!r}.")  # fmt: skip
 
         self.user_key = user_key
         self.item_key = item_key
@@ -62,10 +64,9 @@ class SequentialDataset(Dataset):
         )
         counts = events.group_by(user_key, maintain_order=True).len(name="__count__")
 
-        self._events: dict[str, np.ndarray] = {
-            key: events[key].to_numpy()
-            for key in (item_key, *feature_keys)
-        }  # fmt: skip
+        self._item_ids: np.ndarray = events[item_key].to_numpy()
+        self._features: dict[str, np.ndarray] = {key: events[key].to_numpy() for key in feature_keys}
+
         self._users: list[Any] = counts[user_key].to_list()
 
         self._offsets: np.ndarray = np.zeros(len(counts) + 1, dtype=np.int64)
@@ -76,7 +77,7 @@ class SequentialDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         if not 0 <= idx < len(self):
-            raise IndexError
+            raise IndexError(f"index {idx} is out of range for dataset of size {len(self)}.")
 
         start, end = self._offsets[idx], self._offsets[idx + 1]
         length = end - start
@@ -90,11 +91,12 @@ class SequentialDataset(Dataset):
             _slice = slice(-self.max_length, None)
 
         return {
-            self.user_key: self._users[idx],
-            self.item_key: self._events[self.item_key][start:end],
+            "user_id": self._users[idx],
+            "history": self._item_ids[start:end],
+            "inputs": torch.from_numpy(self._item_ids[start:end][_slice].copy()),
         } | {
-            f"inputs.{key}": torch.from_numpy(value[start:end][_slice].copy())
-            for key, value in self._events.items()
+            f"feature.{key}": torch.from_numpy(value[start:end][_slice].copy())
+            for key, value in self._features.items()
         }  # fmt: skip
 
     def __len__(self) -> int:
