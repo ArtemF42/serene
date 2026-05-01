@@ -1,5 +1,3 @@
-from typing import Literal
-
 import torch
 import torch.nn as nn
 from transformers import GPT2Config, GPT2Model
@@ -16,11 +14,11 @@ class GPT4RecModel(HuggingFaceModel):
         num_heads: int,
         dropout_p: float,
         max_length: int,
-        intermediate_dim: int | None = None,
-        activation: Literal["relu", "gelu", "gelu_new", "silu", "tanh"] = "gelu_new",
+        hidden_dim: int | None = None,
+        activation: str = "gelu_new",
         padding_idx: int = 0,
     ) -> None:
-        super().__init__()
+        super().__init__(padding_idx=padding_idx)
 
         self._gpt2_model = GPT2Model(
             GPT2Config(
@@ -29,7 +27,7 @@ class GPT4RecModel(HuggingFaceModel):
                 n_embd=embedding_dim,
                 n_layer=num_blocks,
                 n_head=num_heads,
-                n_inner=intermediate_dim,
+                n_inner=hidden_dim,
                 activation_function=activation,
                 resid_pdrop=dropout_p,
                 embd_pdrop=dropout_p,
@@ -38,9 +36,15 @@ class GPT4RecModel(HuggingFaceModel):
             )
         )
 
+    def embed(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self._gpt2_model.wte(inputs)
+
+    def head(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return nn.functional.linear(hidden_states, self._gpt2_model.wte.weight)
+
     def _forward(
         self,
-        inputs_embeddings: torch.Tensor,
+        inputs_embeds: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         *args,
         **kwargs,
@@ -48,10 +52,6 @@ class GPT4RecModel(HuggingFaceModel):
         return self._gpt2_model(
             *args,
             attention_mask=padding_mask,
-            inputs_embeds=inputs_embeddings,
+            inputs_embeds=inputs_embeds,
             **kwargs,
         ).last_hidden_state
-
-    @property
-    def item_embedding(self) -> nn.Embedding:
-        return self._gpt2_model.wte

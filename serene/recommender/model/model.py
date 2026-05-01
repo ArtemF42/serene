@@ -5,14 +5,21 @@ import torch.nn as nn
 
 
 class Model(nn.Module, ABC):
-    @property
+    def __init__(self, padding_idx: int) -> None:
+        super().__init__()
+
+        self.padding_idx = padding_idx
+
     @abstractmethod
-    def item_embedding(self) -> nn.Embedding: ...
+    def embed(self, inputs: torch.Tensor) -> torch.Tensor: ...
+
+    @abstractmethod
+    def head(self, hidden_states: torch.Tensor) -> torch.Tensor: ...
 
     @abstractmethod
     def _forward(
         self,
-        inputs_embeddings: torch.Tensor,
+        inputs_embeds: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         *args,
         **kwargs,
@@ -21,21 +28,21 @@ class Model(nn.Module, ABC):
     def forward(
         self,
         inputs: torch.Tensor | None = None,
-        inputs_embeddings: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
         padding_mask: torch.Tensor | None = None,
         *args,
         **kwargs,
     ) -> torch.Tensor:
         if inputs is not None:
-            if inputs_embeddings is not None:
-                raise ValueError("exactly one of `inputs` or `inputs_embeddings` must be specified.")
+            if inputs_embeds is not None:
+                raise ValueError("exactly one of `inputs` or `inputs_embeds` must be specified.")
 
-            inputs_embeddings = self.item_embedding(inputs)
+            inputs_embeds = self.embed(inputs)
 
-        if inputs_embeddings is None:
-            raise ValueError("exactly one of `inputs` or `inputs_embeddings` must be specified.")
+        if inputs_embeds is None:
+            raise ValueError("exactly one of `inputs` or `inputs_embeds` must be specified.")
 
-        return self._forward(inputs_embeddings, padding_mask, *args, **kwargs)
+        return self._forward(inputs_embeds, padding_mask, *args, **kwargs)
 
 
 class HuggingFaceModel(Model):
@@ -45,7 +52,7 @@ class HuggingFaceModel(Model):
     def forward(
         self,
         inputs: torch.Tensor | None = None,
-        inputs_embeddings: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
         padding_mask: torch.Tensor | None = None,
         *args,
         **kwargs,
@@ -53,4 +60,4 @@ class HuggingFaceModel(Model):
         if padding_mask is not None:
             padding_mask = self._convert_padding_mask(padding_mask)
 
-        return super().forward(inputs, inputs_embeddings, padding_mask, *args, **kwargs)
+        return super().forward(inputs, inputs_embeds, padding_mask, *args, **kwargs)
