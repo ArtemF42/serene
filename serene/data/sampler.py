@@ -1,88 +1,109 @@
+import logging
 from typing import Self
 
-import numpy as np
 import polars as pl
 import torch
+import torch.nn as nn
 
 
-class _AliasTable:
-    def __init__(self, weights: np.ndarray) -> None:
+class _AliasTable(nn.Module):
+    def __init__(self, weights: torch.Tensor) -> None:
+        super().__init__()
+
         assert weights.ndim == 1
+        assert weights.numel() > 0
+        assert (weights >= 0).all()
+        assert weights.sum() > 0
 
-        weights = weights.astype(np.float64)
+        device = weights.device
 
-        if not np.isclose(weights.sum(), 1.0):
-            weights = weights / weights.sum()
+        weights = weights.to(torch.float64)
+        weights = weights / weights.sum()
 
-        n = weights.size
+        n = weights.numel()
+        average = 1 / n
 
-        probs = weights * n
-        alias = np.zeros(n, dtype=np.int64)
+        probs = torch.zeros(n, dtype=torch.float64, device=device)
+        alias = torch.zeros(n, dtype=torch.long, device=device)
 
-        under, over = [], []
+        small: list[int] = []
+        large: list[int] = []
 
-        for i, p in enumerate(probs):
-            (under if p < 1.0 else over).append(i)
+        for i, w in enumerate(weights):
+            (small if w < average else large).append(i)
 
-        while under and over:
-            under_i, over_i = under.pop(), over.pop()
+        while small and large:
+            small_i, large_i = small.pop(), large.pop()
 
-            probs[over_i] -= 1.0 - probs[under_i]
-            alias[under_i] = over_i
+            probs[small_i] = weights[small_i] * n
+            alias[small_i] = large_i
 
-            if probs[over_i] < 1.0:
-                under.append(over_i)
-            else:
-                over.append(over_i)
+            weights[large_i] += weights[small_i] - average
 
-        for i in (*under, *over):
-            probs[i] = 1.0
-            alias[i] = i
+            (small if weights[large_i] < average else large).append(large_i)
 
-        self.n = n
-        self.probs = probs
-        self.alias = alias
+        while small:
+            probs[small.pop()] = 1
 
-    def __call__(self, size: int = 1) -> np.ndarray:
-        i = np.random.randint(0, self.n, size=size)
-        u = np.random.uniform(size=size)
-        return np.where(u < self.probs[i], i, self.alias[i])
+        while large:
+            probs[large.pop()] = 1
+
+        self.register_buffer("_probs", probs)
+        self.register_buffer("_alias", alias)
+
+        self._n = n
+
+    def forward(self, size: int = 1) -> torch.Tensor:
+        i = torch.randint(0, self._n, size=(size,), dtype=torch.long, device=self.device)
+        return torch.where(
+            torch.rand(size=(size,), dtype=torch.float64, device=self.device) < self._probs[i],
+            i, self._alias[i],
+        )  # fmt: skip
+
+    @property
+    def device(self) -> torch.device:
+        return self._probs.device
 
 
-class RandomSampler:
+class RandomSampler(nn.Module):
     def __init__(
         self,
-        items: np.ndarray,
-        freqs: np.ndarray,
+        items: torch.Tensor,
+        freqs: torch.Tensor,
         num_samples: int = 1,
-        alpha: float = 0.0,
+        alpha: float | None = None,
     ) -> None:
+        super().__init__()
+
         assert items.ndim == freqs.ndim == 1
-        assert items.size == freqs.size
+        assert items.numel() == freqs.numel()
 
-        if not 0.0 <= alpha <= 1.0:
-            raise ValueError("`alpha` must be in range [0, 1].")
+        if alpha is not None:
+            if not 0 <= alpha <= 1:
+                logging.warning("`alpha` should be in range [0, 1].")
 
-        if num_samples < 1:
-            raise ValueError("`num_samples` must be >= 1.")
+            freqs = freqs**alpha
 
-        self.items = items
-        self.freqs = freqs**alpha
-        self.n_samples = num_samples
+        self.register_buffer("items", items)
+        self.register_buffer("freqs", freqs)
+
+        assert num_samples > 0
+
+        self.num_samples = num_samples
         self.alpha = alpha
 
-        self._alias_table = _AliasTable(self.freqs)
+        self._alias_table = _AliasTable(freqs)
 
-    def __call__(self) -> torch.Tensor:
-        return torch.from_numpy(self.items[self._alias_table(size=self.n_samples)])
+    def forward(self) -> torch.Tensor:
+        return self.items[self._alias_table(self.num_samples)]
 
     @classmethod
     def from_events(
         cls,
         events: pl.DataFrame,
         item_key: str = "item_id",
-        alpha: float = 0.0,
-        n_samples: int = 1,
+        num_samples: int = 1,
+        alpha: float | None = None,
     ) -> Self:
-        items, freqs = events[item_key].value_counts().to_numpy().T
-        return cls(items, freqs, n_samples, alpha)
+        items, freqs = events[item_key].value_counts().to_torch().T
+        return cls(items=items, freqs=freqs, num_samples=num_samples, alpha=alpha)
