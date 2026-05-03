@@ -10,6 +10,7 @@ dependencies = [
     "hydra-core",
     "lightning",
     "numpy",
+    "orjson",
     "polars",
     "torch>=2.6.0",
     "transformers",
