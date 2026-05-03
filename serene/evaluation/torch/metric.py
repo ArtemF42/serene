@@ -21,10 +21,10 @@ class TorchMetric(nn.Module, ABC):
 
         max_k = max(top_k)
 
-        self.top_k = top_k
-        self.max_k = max_k
+        self._top_k = top_k
+        self._max_k = max_k
 
-        self.register_buffer("k_idx", torch.tensor(top_k, dtype=torch.long) - 1)
+        self.register_buffer("_k_idx", torch.tensor(top_k, dtype=torch.long) - 1)
 
     @abstractmethod
     def _forward(self, hits: torch.Tensor) -> torch.Tensor: ...
@@ -42,12 +42,20 @@ class TorchMetric(nn.Module, ABC):
         else:
             raise ValueError("either `hits` or both `recs` and `actuals` must be specified.")
 
-        if hits.shape[1] < self.max_k:
+        if hits.shape[1] < self._max_k:
             raise ValueError()
 
-        values = self._forward(hits[:, : self.max_k])[:, self.k_idx].mean(dim=0)
+        values = self._forward(hits[:, : self._max_k])[:, self._k_idx].mean(dim=0)
 
-        return {f"{self.name}@{k}": value.item() for k, value in zip(self.top_k, values)}
+        return {f"{self.name}@{k}": value.item() for k, value in zip(self._top_k, values)}
+
+    @property
+    def top_k(self) -> tuple[int, ...]:
+        return self._top_k
+
+    @property
+    def max_k(self) -> int:
+        return self._max_k
 
     @property
     def name(self) -> str:
@@ -67,7 +75,7 @@ class MRR(TorchMetric):
     def __init__(self, top_k: int | Iterable[int]) -> None:
         super().__init__(top_k)
 
-        self.register_buffer("_reciprocal_ranks", 1 / (torch.arange(self.max_k) + 1))
+        self.register_buffer("_reciprocal_ranks", 1 / (torch.arange(self._max_k) + 1))
 
     def _forward(self, hits: torch.Tensor) -> torch.Tensor:
         return compute_mrr(hits, self._reciprocal_ranks)
@@ -83,7 +91,29 @@ class NDCG(TorchMetric):
     def __init__(self, top_k: int | Iterable[int]) -> None:
         super().__init__(top_k)
 
-        self.register_buffer("_discount_factors", 1 / torch.log2(torch.arange(self.max_k) + 2))
+        self.register_buffer("_discount_factors", 1 / torch.log2(torch.arange(self._max_k) + 2))
 
     def _forward(self, hits: torch.Tensor) -> torch.Tensor:
         return compute_ndcg(hits, self._discount_factors)
+
+
+class TorchEvaluator(nn.Module):
+    def __init__(self, metrics: Iterable[TorchMetric]) -> None:
+        super().__init__()
+
+        metrics = tuple(metrics)
+
+        if not metrics:
+            raise ValueError()
+
+        self._metrics = nn.ModuleList(metrics)
+        self._max_k = max(metric.max_k for metric in metrics)
+
+    def forward(self, recs: torch.Tensor, actuals: torch.Tensor) -> dict[str, float]:
+        hits = compute_hits(recs, actuals)
+
+        return {name: value for metric in self._metrics for name, value in metric(hits=hits).items()}
+
+    @property
+    def max_k(self) -> int:
+        return self._max_k
